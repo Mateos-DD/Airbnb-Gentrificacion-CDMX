@@ -292,9 +292,6 @@ Aplicar técnicas de **clustering** (K-Means y DBSCAN) sobre la base `UNION_GZ.c
   - Se ajusta K-Means con un número reducido de clusters espaciales (por ejemplo, 7 clusters).
   - Esto permite obtener clusters **puramente espaciales**, sin introducir precio ni otras variables.
 
-- **Exploración de DBSCAN (comentado)**  
-  - Aparece configurado un DBSCAN, aunque en el notebook el enfoque principal queda en K-Means.
-
 **Relación con gentrificación:**  
 
 - Los clusters basados en **coordenadas** (lat/long) permiten identificar:
