@@ -1,0 +1,330 @@
+---
+title: "SEIRE SEMANAL"
+output: html_document
+---
+
+```{r setup_semanal, message=FALSE, warning=FALSE}
+library(tseries)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(plotly)
+
+serie_semanal_alcaldia <- read_csv("serie_diaria_alcaldia.csv")  
+
+# Aseguramos tipos
+serie_semanal_alcaldia$date <- as.Date(serie_semanal_alcaldia$date)
+
+# Ver alcaldías disponibles
+unique(serie_semanal_alcaldia$neighbourhood_cleansed)
+
+
+```
+
+
+
+---
+
+###  Cargar datos semanales y modelo Holt–Winters (ETS AAA) con ggplotly
+
+```{r hw_cuauhtemoc_semanal, message=FALSE, warning=FALSE}
+# 1. Cargar serie semanal por alcaldía
+serie_semanal_alcaldia <- read_csv("serie_semanal_alcaldia.csv")
+
+# 2. Asegurar tipos
+serie_semanal_alcaldia$week_start <- as.Date(serie_semanal_alcaldia$week_start)
+
+# 3. Filtrar Cuauhtémoc y ordenar por fecha
+cuah_sem <- serie_semanal_alcaldia %>%
+  filter(neighbourhood_cleansed == "Xochimilco") %>%
+  arrange(week_start)
+
+# Quitar últimas semanas con outliers
+cuah_sem <- cuah_sem[1:(nrow(cuah_sem) - 1), ]
+
+# 4. Vector de precios y tratamiento de NA
+y_sem <- cuah_sem$price_calendar
+y_sem <- na.interp(y_sem)
+
+
+# 5. Usamos frequency = 1 porque ets() no soporta 52 y 
+# no hay suficientes datos (se requieren >2 años) para estimar estacionalidad.
+precio_cuah_sem_ts <- ts(y_sem, frequency = 1)
+
+# 6. División entrenamiento/prueba (70/30)
+n_total_sem <- length(precio_cuah_sem_ts)
+n_entrenamiento_sem <- round(n_total_sem * 0.7)
+
+ts_entrenamiento_sem <- window(precio_cuah_sem_ts, end = n_entrenamiento_sem)
+ts_prueba_sem <- window(precio_cuah_sem_ts, start = n_entrenamiento_sem + 1)
+
+
+# 7. Modelo Holt (AAN) en lugar de Holt-Winters (AAA)
+# AAN = Error Aditivo, Tendencia Aditiva, Nada de Estacionalidad
+modelo_hw_sem <- ets(ts_entrenamiento_sem, model = "AAN")
+summary(modelo_hw_sem)
+
+# 8. Pronóstico
+k_pronosticos_sem <- length(ts_prueba_sem)
+winters_forecast_sem <- forecast(modelo_hw_sem, h = k_pronosticos_sem)
+
+# 9. Fechas correspondientes a cada segmento
+fechas_entrenamiento_sem <- cuah_sem$week_start[1:n_entrenamiento_sem]
+fechas_prueba_sem        <- cuah_sem$week_start[(n_entrenamiento_sem + 1):n_total_sem]
+fechas_pronostico_sem    <- fechas_prueba_sem
+fechas_ajuste_sem        <- fechas_entrenamiento_sem
+
+# 10. Gráfico  original
+df_entrenamiento_sem <- data.frame(
+  Fecha = fechas_entrenamiento_sem,
+  Valor = as.numeric(ts_entrenamiento_sem),
+  Serie = "Entrenamiento"
+)
+
+df_prueba_sem <- data.frame(
+  Fecha = fechas_prueba_sem,
+  Valor = as.numeric(ts_prueba_sem),
+  Serie = "Prueba (Reales)"
+)
+
+df_pronostico_sem <- data.frame(
+  Fecha = fechas_pronostico_sem,
+  Valor = as.numeric(winters_forecast_sem$mean),
+  Serie = "Pronóstico"
+)
+
+df_ajuste_sem <- data.frame(
+  Fecha = fechas_ajuste_sem,
+  Valor = as.numeric(fitted(modelo_hw_sem)),
+  Serie = "Suavizado"
+)
+
+df_completo_sem <- bind_rows(
+  df_entrenamiento_sem, df_prueba_sem,
+  df_pronostico_sem, df_ajuste_sem
+)
+
+# 11. Gráfico interactivo
+p_sem <- ggplot(df_completo_sem, aes(x = Fecha, y = Valor, color = Serie)) +
+  geom_line(data = df_entrenamiento_sem, size = 0.8) +
+  geom_line(data = df_prueba_sem, size = 0.8) +
+  geom_line(data = df_pronostico_sem, size = 0.8) +
+  geom_line(data = df_ajuste_sem, size = 0.8, linetype = "dashed") +
+  geom_point(aes(text = paste("Fecha : ", Fecha,
+                              "<br>", Serie, ":", round(Valor, 2))),
+             size = 1) +
+  labs(
+    title = "Serie semanal de precios Airbnb - Xochimilco\nModelo Holt–Winters ETS(AAA)",
+    x = "Semana",
+    y = "Precio promedio por noche (MXN)"
+  ) +
+  theme_classic()
+
+ggplotly(p_sem, tooltip = "text")
+
+# 12. Métricas de precisión en el conjunto de prueba
+accuracy(winters_forecast_sem, ts_prueba_sem)
+```
+
+
+---
+
+
+### Serie original semanal (para ARIMA)
+
+
+```{r serie_original_cuah_sem}
+# Usamos el mismo y_sem ya limpiado
+cuah_sem_ts <- ts(y_sem)  # sin frecuencia estacional explícita
+
+plot(cuah_sem_ts,
+     main = "Precio promedio semanal Airbnb - Cuauhtémoc (Serie original)",
+     ylab = "Precio promedio por noche (MXN)",
+     xlab = "Tiempo (índice)")
+     
+```
+
+
+
+---
+
+### ACF y PACF de la serie semanal
+
+
+```{r acf_pacf_cuauhtemoc_semanal}
+# ACF
+acf(cuah_sem_ts, lag.max = 30,
+    main = "Función de Autocorrelación (ACF) - Cuauhtémoc (semanal)")
+
+resultados_acf_cuah_sem <- acf(cuah_sem_ts, lag.max = 30, plot = FALSE)
+print(resultados_acf_cuah_sem)
+
+# PACF
+pacf(cuah_sem_ts, lag.max = 30,
+     main = "Función de Autocorrelación Parcial (PACF) - Cuauhtémoc (semanal)")
+
+resultados_pac_cuah_sem <- pacf(cuah_sem_ts, lag.max = 30, plot = FALSE)
+resultados_pac_cuah_sem
+``` 
+
+
+
+---
+
+### Test Dickey–Fuller
+
+
+```{r adf_cuauhtemoc_semanal}
+adf.test(cuah_sem_ts)
+```
+
+
+---
+
+### Modelo AR(1) sobre la serie semanal
+
+
+```{r ar1_cuauhtemoc_semanal}
+modelo_ar1_cuah_sem <- Arima(cuah_sem_ts, order = c(1, 0, 0))
+
+print(modelo_ar1_cuah_sem)
+
+autoplot(modelo_ar1_cuah_sem) +
+  ggtitle("Modelo AR(1) - Serie semanal Cuauhtémoc")
+```
+
+
+---
+
+### Diferenciación, ADF y ACF/PACF de la serie diferenciada
+
+
+```{r diff_acf_pacf_cuauhtemoc_semanal}
+# Primera diferencia
+cuah_sem_diff <- diff(cuah_sem_ts, differences = 1)
+
+# Dickey–Fuller sobre la serie diferenciada
+adf.test(cuah_sem_diff)
+
+# ACF y PACF de la serie diferenciada
+acf(cuah_sem_diff, lag.max = 30,
+    main = "ACF - Cuauhtémoc semanal (serie diferenciada)")
+
+pacf(cuah_sem_diff, lag.max = 30,
+     main = "PACF - Cuauhtémoc semanal (serie diferenciada)")
+```
+
+
+---
+
+### Modelos ARIMA candidatos
+
+```{r modelos_arima_cuauhtemoc_semanal}
+# Modelo automático
+modelo_1_sem <- auto.arima(cuah_sem_ts)
+print(modelo_1_sem)
+
+# Algunos modelos propuestos (ajusta Manual)
+modelo_2_sem <- Arima(cuah_sem_ts, order = c(3, 1, 1))
+print(modelo_2_sem)
+
+modelo_3_sem <- Arima(cuah_sem_ts, order = c(3, 1, 2))
+print(modelo_3_sem)
+
+modelo_4_sem <- Arima(cuah_sem_ts, order = c(0, 1, 1))
+print(modelo_4_sem)
+```
+
+
+---
+
+### Test de Ljung–Box sobre residuos
+
+
+```{r ljung_box_cuauhtemoc_semanal}
+resid_1_sem <- residuals(modelo_1_sem)
+resid_2_sem <- residuals(modelo_2_sem)
+resid_3_sem <- residuals(modelo_3_sem)
+resid_4_sem <- residuals(modelo_4_sem)
+
+# Nota: fitdf ≈ número de parámetros AR+MA de cada modelo
+Box.test(resid_1_sem, lag = 20, type = "Ljung-Box", fitdf = 2)
+Box.test(resid_2_sem, lag = 20, type = "Ljung-Box", fitdf = 4)
+Box.test(resid_3_sem, lag = 20, type = "Ljung-Box", fitdf = 5)
+Box.test(resid_4_sem, lag = 20, type = "Ljung-Box", fitdf = 1)
+```
+
+
+---
+
+### Pronósticos a corto plazo (semanal)
+
+
+```{r forecast_corto_cuauhtemoc_semanal}
+# Horizonte de pronóstico, por ejemplo 8 semanas
+h_corto_sem <- 8
+
+pron_1_sem <- forecast(modelo_1_sem, h = h_corto_sem)
+pron_2_sem <- forecast(modelo_2_sem, h = h_corto_sem)
+pron_3_sem <- forecast(modelo_3_sem, h = h_corto_sem)
+pron_4_sem <- forecast(modelo_4_sem, h = h_corto_sem)
+
+# Mostrar pronósticos
+print(pron_1_sem)
+print(pron_2_sem)
+print(pron_3_sem)
+print(pron_4_sem)
+
+# Graficar uno de ellos (el automático, por ejemplo)
+plot(pron_1_sem,
+     main = "Pronóstico modelo auto.arima - Cuauhtémoc (semanal)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cuah_sem_ts, col = "black")
+```
+
+
+---
+
+### División entrenamiento/prueba (80/20) para la serie semanal
+
+
+```{r train_test_cuauhtemoc_semanal}
+# División 80% / 20%
+N_sem      <- length(cuah_sem_ts)
+num_train  <- floor(0.8 * N_sem)
+cuah_sem_train <- head(cuah_sem_ts, num_train)
+h_test_sem <- N_sem - num_train
+cuah_sem_test  <- tail(cuah_sem_ts, h_test_sem)
+
+# Modelos en el conjunto de entrenamiento
+modelo_1_sem_tr <- auto.arima(cuah_sem_train)
+modelo_2_sem_tr <- Arima(cuah_sem_train, order = c(3, 1, 1))
+modelo_3_sem_tr <- Arima(cuah_sem_train, order = c(3, 1, 2))
+modelo_4_sem_tr <- Arima(cuah_sem_train, order = c(0, 1, 1))
+
+# Pronósticos sobre test
+pron_A_sem <- forecast(modelo_1_sem_tr, h = h_test_sem)
+pron_B_sem <- forecast(modelo_2_sem_tr, h = h_test_sem)
+pron_C_sem <- forecast(modelo_3_sem_tr, h = h_test_sem)
+pron_D_sem <- forecast(modelo_4_sem_tr, h = h_test_sem)
+
+# Métricas de precisión
+accuracy(pron_A_sem, cuah_sem_test)
+accuracy(pron_B_sem, cuah_sem_test)
+accuracy(pron_C_sem, cuah_sem_test)
+accuracy(pron_D_sem, cuah_sem_test)
+
+# Gráfico para el modelo automático
+plot(pron_A_sem,
+     main = "Pronóstico (train/test) - Cuauhtémoc semanal (auto.arima)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cuah_sem_ts, col = "black")
+```   
+
+
+
+
+

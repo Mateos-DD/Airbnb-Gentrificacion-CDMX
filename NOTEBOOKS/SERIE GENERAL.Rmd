@@ -1,0 +1,561 @@
+---
+title: "SERIE GENERAL"
+output: html_document
+---
+
+# --- 1. Librerías ---
+
+```{r setup_libraries, message=FALSE, warning=FALSE}
+library(tseries)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(plotly)
+
+```
+
+---
+
+### Chunk 2 – Holt–Winters ETS(AAA) para el promedio semanal de **toda CDMX** (ggplotly)
+
+
+```{r hw_cdmx_semanal, message=FALSE, warning=FALSE}
+# 1. Cargar la serie semanal por alcaldía
+serie_semanal_alcaldia <- read_csv("serie_semanal_alcaldia.csv")
+
+# Aseguramos tipo Date en la semana
+serie_semanal_alcaldia$week_start <- as.Date(serie_semanal_alcaldia$week_start)
+
+# 2. Promedio semanal de precio para TODA CDMX
+cdmx_sem <- serie_semanal_alcaldia %>%
+  group_by(week_start) %>%
+  summarise(
+    precio_mean = mean(price_calendar, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(week_start)
+
+# 3. Vector de precios y tratamiento de NA
+y_sem_cdmx <- cdmx_sem$precio_mean
+y_sem_cdmx <- na.interp(y_sem_cdmx)
+
+# 4. Serie de tiempo semanal (para ETS usamos frecuencia 52)
+precio_cdmx_sem_ts <- ts(y_sem_cdmx, frequency = 52)
+
+# 5. División entrenamiento / prueba (70% / 30%)
+n_total <- length(precio_cdmx_sem_ts)
+n_entrenamiento <- round(n_total * 0.7)
+
+ts_entrenamiento <- window(
+  precio_cdmx_sem_ts,
+  end = time(precio_cdmx_sem_ts)[n_entrenamiento]
+)
+
+ts_prueba <- window(
+  precio_cdmx_sem_ts,
+  start = time(precio_cdmx_sem_ts)[n_entrenamiento + 1]
+)
+
+# 6. Modelo Holt–Winters ETS(AAA)
+modelo_hw_cdmx <- ets(ts_entrenamiento, model = "AAN")
+summary(modelo_hw_cdmx)
+
+# 7. Pronóstico para el tamaño del conjunto de prueba
+k_pronosticos <- length(ts_prueba)
+winters_forecast <- forecast(modelo_hw_cdmx, h = k_pronosticos)
+
+# 8. Fechas correspondientes a cada segmento
+fechas_entrenamiento <- cdmx_sem$week_start[1:n_entrenamiento]
+fechas_prueba        <- cdmx_sem$week_start[(n_entrenamiento + 1):n_total]
+fechas_pronostico    <- fechas_prueba
+fechas_ajuste        <- fechas_entrenamiento
+
+# 9. Data frames para el gráfico (igual que en tu Rmd)
+df_entrenamiento <- data.frame(
+  Fecha = fechas_entrenamiento,
+  Valor = as.numeric(ts_entrenamiento),
+  Serie = "Entrenamiento"
+)
+
+df_prueba <- data.frame(
+  Fecha = fechas_prueba,
+  Valor = as.numeric(ts_prueba),
+  Serie = "Prueba (Reales)"
+)
+
+df_pronostico <- data.frame(
+  Fecha = fechas_pronostico,
+  Valor = as.numeric(winters_forecast$mean),
+  Serie = "Pronóstico"
+)
+
+df_ajuste <- data.frame(
+  Fecha = fechas_ajuste,
+  Valor = as.numeric(fitted(modelo_hw_cdmx)),
+  Serie = "Suavizado"
+)
+
+df_completo <- dplyr::bind_rows(
+  df_entrenamiento, df_prueba, df_pronostico, df_ajuste
+)
+
+# 10. Gráfico interactivo
+p <- ggplot(df_completo, aes(x = Fecha, y = Valor, color = Serie)) +
+  geom_line(data = df_entrenamiento, size = 0.8) +
+  geom_line(data = df_prueba, size = 0.8) +
+  geom_line(data = df_pronostico, size = 0.8) +
+  geom_line(data = df_ajuste, size = 0.8, linetype = "dashed") +
+  geom_point(aes(text = paste("Fecha : ", Fecha,
+                              "<br>", Serie, ":", round(Valor, 2))),
+             size = 1) +
+  labs(
+    title = "Serie semanal de precios Airbnb - CDMX (promedio de todas las alcaldías)\nModelo Holt–Winters ETS(AAA)",
+    x = "Semana",
+    y = "Precio promedio por noche (MXN)"
+  ) +
+  theme_classic()
+
+ggplotly(p, tooltip = "text")
+
+# 11. Métricas de precisión sobre el conjunto de prueba
+accuracy(winters_forecast, ts_prueba)
+
+# 12. Guardamos la serie completa sin frecuencia explícita para ARIMA
+cdmx_ts <- ts(y_sem_cdmx)
+```
+
+---
+
+### Chunk 3 – Serie original semanal (promedio CDMX)
+
+
+```{r serie_original_cdmx}
+plot(cdmx_ts,
+     main = "Precio promedio semanal Airbnb - CDMX (Serie original)",
+     ylab = "Precio promedio por noche (MXN)",
+     xlab = "Tiempo (índice)")
+```
+
+---
+
+### Chunk 4 – ACF y PACF de la serie original
+
+
+```{r acf_pacf_cdmx}
+# ACF
+acf(cdmx_ts, lag.max = 30,
+    main = "Función de Autocorrelación (ACF) - CDMX")
+
+resultados_acf_cdmx <- acf(cdmx_ts, lag.max = 30, plot = FALSE)
+resultados_acf_cdmx
+
+# PACF
+pacf(cdmx_ts, lag.max = 30,
+     main = "Función de Autocorrelación Parcial (PACF) - CDMX")
+
+resultados_pac_cdmx <- pacf(cdmx_ts, lag.max = 30, plot = FALSE)
+resultados_pac_cdmx
+```
+
+---
+
+### Chunk 5 – Test Dickey–Fuller (ADF) para CDMX
+
+
+```{r adf_cdmx}
+adf.test(cdmx_ts)
+```
+
+---
+
+### Chunk 6 – Modelo AR(1) sobre la serie original + raíces inversas
+
+
+```{r ar1_cdmx}
+modelo_ar1_cdmx <- Arima(cdmx_ts, order = c(1, 0, 0))
+
+modelo_ar1_cdmx   # muestra coeficientes y AIC/BIC
+
+# Gráficos de diagnóstico (incluye raíces AR)
+autoplot(modelo_ar1_cdmx)
+```
+
+---
+
+### Chunk 7 – Serie diferenciada + ACF y PACF
+
+
+```{r diff_acf_pacf_cdmx}
+# Primera diferencia
+cdmx_diff <- diff(cdmx_ts, differences = 1)
+
+# Test ADF a la serie diferenciada
+adf.test(cdmx_diff)
+
+# ACF y PACF de la serie diferenciada
+acf(cdmx_diff, lag.max = 30,
+    main = "ACF - CDMX (serie diferenciada)")
+
+pacf(cdmx_diff, lag.max = 30,
+     main = "PACF - CDMX (serie diferenciada)")
+```
+
+---
+
+### Chunk 8 – Modelos ARIMA para la serie general de CDMX
+
+
+```{r modelos_arima_cdmx}
+# Modelo automático
+modelo_1_cdmx <- auto.arima(cdmx_ts)
+modelo_1_cdmx
+
+# Modelos propuestos manuales (puedes ajustar órdenes)
+modelo_2_cdmx <- Arima(cdmx_ts, order = c(3, 1, 1))
+modelo_2_cdmx
+
+modelo_3_cdmx <- Arima(cdmx_ts, order = c(3, 1, 2))
+modelo_3_cdmx
+
+modelo_4_cdmx <- Arima(cdmx_ts, order = c(0, 1, 1))
+modelo_4_cdmx
+```
+
+---
+
+### Chunk 9 – Test de Ljung–Box sobre los residuos
+
+
+```{r ljung_box_cdmx}
+resid_1 <- residuals(modelo_1_cdmx)
+resid_2 <- residuals(modelo_2_cdmx)
+resid_3 <- residuals(modelo_3_cdmx)
+resid_4 <- residuals(modelo_4_cdmx)
+
+Box.test(resid_1, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_1_cdmx)))
+Box.test(resid_2, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_2_cdmx)))
+Box.test(resid_3, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_3_cdmx)))
+Box.test(resid_4, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_4_cdmx)))
+```
+
+---
+
+### Chunk 10 – Pronóstico corto con el modelo ARIMA elegido (auto.arima)
+
+
+```{r forecast_corto_cdmx}
+h_corto <- 8  # por ejemplo, 8 semanas
+
+pron_1_corto <- forecast(modelo_1_cdmx, h = h_corto)
+
+plot(pron_1_corto,
+     main = "Pronóstico modelo auto.arima - CDMX (semanal)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cdmx_ts, col = "black")
+
+```
+
+---
+
+### Chunk 11 – Esquema train/test (80/20) para ARIMA general CDMX
+
+
+```{r train_test_cdmx}
+N        <- length(cdmx_ts)
+num_train <- floor(0.8 * N)
+cdmx_train <- head(cdmx_ts, num_train)
+h_test     <- N - num_train
+cdmx_test  <- tail(cdmx_ts, h_test)
+
+# Modelo en el conjunto de entrenamiento
+modelo_tr_cdmx <- auto.arima(cdmx_train)
+
+# Pronóstico sobre el conjunto de prueba
+pron_tr_cdmx <- forecast(modelo_tr_cdmx, h = h_test)
+
+# Métricas de precisión
+accuracy(pron_tr_cdmx, cdmx_test)
+
+# Gráfico train/test
+plot(pron_tr_cdmx,
+     main = "Pronóstico (train/test) - CDMX (semanal)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cdmx_ts, col = "black")
+```
+############################################
+```{r hw_cdmx_semanal, message=FALSE, warning=FALSE}
+# 1. Cargar la serie semanal por alcaldía
+serie_semanal_alcaldia <- read_csv("serie_semanal_alcaldia_2021.csv")
+
+# Aseguramos tipo Date en la semana
+serie_semanal_alcaldia$week_start <- as.Date(serie_semanal_alcaldia$week_start)
+
+# 2. Promedio semanal de precio para TODA CDMX
+cdmx_sem <- serie_semanal_alcaldia %>%
+  group_by(week_start) %>%
+  summarise(
+    precio_mean = mean(price_calendar, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(week_start)
+
+# 3. Vector de precios y tratamiento de NA
+y_sem_cdmx <- cdmx_sem$precio_mean
+y_sem_cdmx <- na.interp(y_sem_cdmx)
+
+# 4. Serie de tiempo semanal (para ETS usamos frecuencia 52)
+precio_cdmx_sem_ts <- ts(y_sem_cdmx, frequency = 52)
+
+# 5. División entrenamiento / prueba (70% / 30%)
+n_total <- length(precio_cdmx_sem_ts)
+n_entrenamiento <- round(n_total * 0.7)
+
+ts_entrenamiento <- window(
+  precio_cdmx_sem_ts,
+  end = time(precio_cdmx_sem_ts)[n_entrenamiento]
+)
+
+ts_prueba <- window(
+  precio_cdmx_sem_ts,
+  start = time(precio_cdmx_sem_ts)[n_entrenamiento + 1]
+)
+
+# 6. Modelo Holt–Winters ETS(AAA)
+modelo_hw_cdmx <- ets(ts_entrenamiento, model = "AAN")
+summary(modelo_hw_cdmx)
+
+# 7. Pronóstico para el tamaño del conjunto de prueba
+k_pronosticos <- length(ts_prueba)
+winters_forecast <- forecast(modelo_hw_cdmx, h = k_pronosticos)
+
+# 8. Fechas correspondientes a cada segmento
+fechas_entrenamiento <- cdmx_sem$week_start[1:n_entrenamiento]
+fechas_prueba        <- cdmx_sem$week_start[(n_entrenamiento + 1):n_total]
+fechas_pronostico    <- fechas_prueba
+fechas_ajuste        <- fechas_entrenamiento
+
+# 9. Data frames para el gráfico (igual que en tu Rmd)
+df_entrenamiento <- data.frame(
+  Fecha = fechas_entrenamiento,
+  Valor = as.numeric(ts_entrenamiento),
+  Serie = "Entrenamiento"
+)
+
+df_prueba <- data.frame(
+  Fecha = fechas_prueba,
+  Valor = as.numeric(ts_prueba),
+  Serie = "Prueba (Reales)"
+)
+
+df_pronostico <- data.frame(
+  Fecha = fechas_pronostico,
+  Valor = as.numeric(winters_forecast$mean),
+  Serie = "Pronóstico"
+)
+
+df_ajuste <- data.frame(
+  Fecha = fechas_ajuste,
+  Valor = as.numeric(fitted(modelo_hw_cdmx)),
+  Serie = "Suavizado"
+)
+
+df_completo <- dplyr::bind_rows(
+  df_entrenamiento, df_prueba, df_pronostico, df_ajuste
+)
+
+# 10. Gráfico interactivo
+p <- ggplot(df_completo, aes(x = Fecha, y = Valor, color = Serie)) +
+  geom_line(data = df_entrenamiento, size = 0.8) +
+  geom_line(data = df_prueba, size = 0.8) +
+  geom_line(data = df_pronostico, size = 0.8) +
+  geom_line(data = df_ajuste, size = 0.8, linetype = "dashed") +
+  geom_point(aes(text = paste("Fecha : ", Fecha,
+                              "<br>", Serie, ":", round(Valor, 2))),
+             size = 1) +
+  labs(
+    title = "Serie semanal de precios Airbnb - CDMX (promedio de todas las alcaldías)\nModelo Holt–Winters ETS(AAN)",
+    x = "Semana",
+    y = "Precio promedio por noche (MXN)"
+  ) +
+  theme_classic()
+
+ggplotly(p, tooltip = "text")
+
+# 11. Métricas de precisión sobre el conjunto de prueba
+accuracy(winters_forecast, ts_prueba)
+
+# 12. Guardamos la serie completa sin frecuencia explícita para ARIMA
+cdmx_ts <- ts(y_sem_cdmx)
+```
+
+
+
+### Chunk 3 – Serie original semanal (promedio CDMX)
+
+
+```{r serie_original_cdmx}
+plot(cdmx_ts,
+     main = "Precio promedio semanal Airbnb - CDMX (Serie original)",
+     ylab = "Precio promedio por noche (MXN)",
+     xlab = "Tiempo (índice)")
+```
+
+---
+
+### Chunk 4 – ACF y PACF de la serie original
+
+
+```{r acf_pacf_cdmx}
+# ACF
+acf(cdmx_ts, lag.max = 30,
+    main = "Función de Autocorrelación (ACF) - CDMX")
+
+resultados_acf_cdmx <- acf(cdmx_ts, lag.max = 30, plot = FALSE)
+resultados_acf_cdmx
+
+# PACF
+pacf(cdmx_ts, lag.max = 30,
+     main = "Función de Autocorrelación Parcial (PACF) - CDMX")
+
+resultados_pac_cdmx <- pacf(cdmx_ts, lag.max = 30, plot = FALSE)
+resultados_pac_cdmx
+```
+
+---
+
+### Chunk 5 – Test Dickey–Fuller (ADF) para CDMX
+
+
+```{r adf_cdmx}
+adf.test(cdmx_ts)
+```
+
+---
+
+### Chunk 6 – Modelo AR(1) sobre la serie original + raíces inversas
+
+
+```{r ar1_cdmx}
+modelo_ar1_cdmx <- Arima(cdmx_ts, order = c(1, 0, 0))
+
+modelo_ar1_cdmx   # muestra coeficientes y AIC/BIC
+
+# Gráficos de diagnóstico (incluye raíces AR)
+autoplot(modelo_ar1_cdmx)
+```
+
+---
+
+### Chunk 7 – Serie diferenciada + ACF y PACF
+
+
+```{r diff_acf_pacf_cdmx}
+# Primera diferencia
+cdmx_diff <- diff(cdmx_ts, differences = 1)
+
+# Test ADF a la serie diferenciada
+adf.test(cdmx_diff)
+
+# ACF y PACF de la serie diferenciada
+acf(cdmx_diff, lag.max = 30,
+    main = "ACF - CDMX (serie diferenciada)")
+
+pacf(cdmx_diff, lag.max = 30,
+     main = "PACF - CDMX (serie diferenciada)")
+```
+
+---
+
+### Chunk 8 – Modelos ARIMA para la serie general de CDMX
+
+
+```{r modelos_arima_cdmx}
+# Modelo automático
+modelo_1_cdmx <- auto.arima(cdmx_ts)
+modelo_1_cdmx
+
+# Modelos propuestos manuales (puedes ajustar órdenes)
+modelo_2_cdmx <- Arima(cdmx_ts, order = c(3, 1, 1))
+modelo_2_cdmx
+
+modelo_3_cdmx <- Arima(cdmx_ts, order = c(3, 1, 2))
+modelo_3_cdmx
+
+modelo_4_cdmx <- Arima(cdmx_ts, order = c(0, 1, 1))
+modelo_4_cdmx
+```
+
+---
+
+### Chunk 9 – Test de Ljung–Box sobre los residuos
+
+
+```{r ljung_box_cdmx}
+resid_1 <- residuals(modelo_1_cdmx)
+resid_2 <- residuals(modelo_2_cdmx)
+resid_3 <- residuals(modelo_3_cdmx)
+resid_4 <- residuals(modelo_4_cdmx)
+
+Box.test(resid_1, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_1_cdmx)))
+Box.test(resid_2, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_2_cdmx)))
+Box.test(resid_3, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_3_cdmx)))
+Box.test(resid_4, lag = 20, type = "Ljung-Box",
+         fitdf = length(coef(modelo_4_cdmx)))
+```
+
+---
+
+### Chunk 10 – Pronóstico corto con el modelo ARIMA elegido (auto.arima)
+
+
+```{r forecast_corto_cdmx}
+h_corto <- 8  # por ejemplo, 8 semanas
+
+pron_1_corto <- forecast(modelo_1_cdmx, h = h_corto)
+
+plot(pron_1_corto,
+     main = "Pronóstico modelo auto.arima - CDMX (semanal)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cdmx_ts, col = "black")
+
+```
+
+---
+
+### Chunk 11 – Esquema train/test (80/20) para ARIMA general CDMX
+
+
+```{r train_test_cdmx}
+N        <- length(cdmx_ts)
+num_train <- floor(0.8 * N)
+cdmx_train <- head(cdmx_ts, num_train)
+h_test     <- N - num_train
+cdmx_test  <- tail(cdmx_ts, h_test)
+
+# Modelo en el conjunto de entrenamiento
+modelo_tr_cdmx <- auto.arima(cdmx_train)
+
+# Pronóstico sobre el conjunto de prueba
+pron_tr_cdmx <- forecast(modelo_tr_cdmx, h = h_test)
+
+# Métricas de precisión
+accuracy(pron_tr_cdmx, cdmx_test)
+
+# Gráfico train/test
+plot(pron_tr_cdmx,
+     main = "Pronóstico (train/test) - CDMX (semanal)",
+     xlab = "Tiempo (índice)",
+     ylab = "Precio promedio por noche (MXN)")
+lines(cdmx_ts, col = "black")
+```
